@@ -65,6 +65,11 @@ namespace MonoDevelop.MacIntegration.MainToolbar
 			StatusBar.SearchBar = SearchBar;
 
 			Ide.Gui.Styles.Changed +=  (o, e) => UpdateLayout ();
+
+			NSApplication.SharedApplication.SetAutomaticCustomizeTouchBarMenuItemEnabled (true);
+
+			var touchbar = new Touchbar.MonoTouchBar ();
+			NSApplication.SharedApplication.SetTouchBar (touchbar);
 		}
 
 		const float toolbarPadding = 8.0f;

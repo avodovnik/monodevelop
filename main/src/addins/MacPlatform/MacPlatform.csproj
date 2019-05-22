@@ -116,6 +116,9 @@
     <Compile Include="MacHttpMessageHandlerProvider.cs" />
     <Compile Include="NSUrlSessionCredentialsHandler.cs" />
     <Compile Include="BasicAuthenticationHandler.cs" />
+    <Compile Include="Touchbar\MonoTouchBar.cs" />
+    <Compile Include="Touchbar\DefaultTouchBarDelegate.cs" />
+    <Compile Include="Touchbar\GetToCodeTouchBarDelegate.cs" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="MacPlatform.addin.xml" />
@@ -156,6 +159,9 @@
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
   <ItemGroup>
     <LibXammac Include="..\..\..\external\libxammac.dylib" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="Touchbar\" />
   </ItemGroup>
   <Target Name="AfterBuild">
     <Copy SourceFiles="@(LibXammac)" DestinationFiles="$(OutputPath)\libxammac.dylib" SkipUnchangedFiles="true" />
