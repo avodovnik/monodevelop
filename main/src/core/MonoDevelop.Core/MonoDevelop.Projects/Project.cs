@@ -1535,7 +1535,7 @@ namespace MonoDevelop.Projects
 			}
 		}
 
-		protected internal bool HasMultipleTargetFrameworks {
+		public bool HasMultipleTargetFrameworks {
 			get { return activeTargetFramework != null; }
 		}
 
