@@ -27,6 +27,7 @@ using System;
 using System.Linq;
 using System.Threading.Tasks;
 using MonoDevelop.Core;
+using MonoDevelop.Core.Assemblies;
 using MonoDevelop.Core.Execution;
 using MonoDevelop.DotNetCore;
 using MonoDevelop.Ide;
@@ -92,20 +93,30 @@ namespace MonoDevelop.AspNetCore
 			};
 		}
 
-		protected override Task OnExecute (ProgressMonitor monitor, ExecutionContext context, ConfigurationSelector configuration, SolutionItemRunConfiguration runConfiguration)
+		protected override Task OnExecute (
+			ProgressMonitor monitor,
+			ExecutionContext context,
+			ConfigurationSelector configuration,
+			TargetFrameworkMoniker framework,
+			SolutionItemRunConfiguration runConfiguration)
 		{
-			if (Project.GetTargetFramework (configuration).IsNetCoreApp () && DotNetCoreRuntime.IsInstalled) {
-				return CheckCertificateThenExecute (monitor, context, configuration, runConfiguration);
+			if (DotNetCoreRuntime.IsInstalled) {
+				return CheckCertificateThenExecute (monitor, context, configuration, framework, runConfiguration);
 			}
-			return base.OnExecute (monitor, context, configuration, runConfiguration);
+			return base.OnExecute (monitor, context, configuration, framework, runConfiguration);
 		}
 
-		async Task CheckCertificateThenExecute (ProgressMonitor monitor, ExecutionContext context, ConfigurationSelector configuration, SolutionItemRunConfiguration runConfiguration)
+		async Task CheckCertificateThenExecute (
+			ProgressMonitor monitor,
+			ExecutionContext context,
+			ConfigurationSelector configuration,
+			TargetFrameworkMoniker framework,
+			SolutionItemRunConfiguration runConfiguration)
 		{
 			if (AspNetCoreCertificateManager.CheckDevelopmentCertificateIsTrusted (Project, runConfiguration)) {
 				await AspNetCoreCertificateManager.TrustDevelopmentCertificate (monitor);
 			}
-			await base.OnExecute (monitor, context, configuration, runConfiguration);
+			await base.OnExecute (monitor, context, configuration, framework, runConfiguration);
 		}
 
 		protected override string OnGetDefaultBuildAction (string fileName)
