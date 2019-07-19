@@ -1580,7 +1580,7 @@ namespace MonoDevelop.Projects
 		internal protected IEnumerable<string> GetTargetFrameworks ()
 		{
 			var frameworks = GetTargetFrameworks (MSBuildProject);
-			return frameworks ?? Enumerable.Empty<string> ();
+			return frameworks ?? Array.Empty<string> ();
 		}
 
 		/// <summary>
