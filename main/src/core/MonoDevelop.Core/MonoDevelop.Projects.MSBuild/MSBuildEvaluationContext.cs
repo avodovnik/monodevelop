@@ -614,15 +614,15 @@ namespace MonoDevelop.Projects.MSBuild
 			if (memberName.Length == 0)
 				return false;
 
-			var member = ResolveMember (type, memberName.ToString (), instance == null);
-			if (member == null || member.Length == 0)
-				return false;
-
 			if (j < str.Length && str[j] == '(') {
 				// It is a method invocation
 				object [] parameterValues;
 				j++;
 				if (!EvaluateParameters (str, ref j, out parameterValues))
+					return false;
+
+				var member = ResolveMember (type, memberName.ToString (), instance == null, MemberTypes.Method);
+				if (member == null || member.Length == 0)
 					return false;
 
 				if (!EvaluateMethod (str, member, instance, parameterValues, out val))
@@ -634,6 +634,7 @@ namespace MonoDevelop.Projects.MSBuild
 			} else {
 				// It has to be a property or field
 				try {
+					var member = ResolveMember (type, memberName.ToString (), instance == null, MemberTypes.Property | MemberTypes.Field);
 					if (member[0] is PropertyInfo)
 						val = ((PropertyInfo)member[0]).GetValue (instance);
 					else if (member[0] is FieldInfo)
@@ -683,7 +684,7 @@ namespace MonoDevelop.Projects.MSBuild
 		internal bool EvaluateMember (ReadOnlySpan<char> str, Type type, string memberName, object instance, object [] parameterValues, out object val)
 		{
 			val = null;
-			var member = ResolveMember (type, memberName, instance == null);
+			var member = ResolveMember (type, memberName, instance == null, MemberTypes.Method);
 			if (member == null || member.Length == 0)
 				return false;
 			return EvaluateMethod (str, member, instance, parameterValues, out val);
@@ -694,7 +695,7 @@ namespace MonoDevelop.Projects.MSBuild
 			val = null;
 
 			// Find a method with a matching number of parameters
-			var method = FindBestOverload (member.OfType<MethodBase> (), parameterValues);
+			var method = FindBestOverload (member, parameterValues);
 			if (method == null)
 				return false;
 
@@ -792,56 +793,100 @@ namespace MonoDevelop.Projects.MSBuild
 			return false;
 		}
 
-		MethodBase FindBestOverload (IEnumerable<MethodBase> methods, object [] args)
+		MethodBase FindBestOverload (IEnumerable<MemberInfo> members, object [] args)
 		{
 			MethodBase methodWithParams = null;
+			MethodBase validMatch = null;
 
-			foreach (var m in methods) {
+			foreach (var member in members) {
+				if (!(member is MethodBase m))
+					continue;
+
 				var argInfo = m.GetParameters ();
 
-				// Exclude methods which take a complex object as argument
-				if (argInfo.Any (a => a.ParameterType != typeof(object) && Type.GetTypeCode (a.ParameterType) == TypeCode.Object && !IsParamsArg(a)))
-					continue;
-
-				if (args.Length >= argInfo.Length - 1 && argInfo.Length > 0 && IsParamsArg (argInfo [argInfo.Length - 1])) {
-					methodWithParams = m;
+				if (args.Length < argInfo.Length - 1) {
 					continue;
 				}
+
 				if (args.Length != argInfo.Length) {
-					if (args.Length == argInfo.Length - 1 && m.DeclaringType != typeof (IntrinsicFunctions) || m.Name != nameof(IntrinsicFunctions.GetPathOfFileAbove)) {
+					if (args.Length == argInfo.Length - 1 && m.DeclaringType != typeof (IntrinsicFunctions) || m.Name != nameof (IntrinsicFunctions.GetPathOfFileAbove)) {
+						continue;
+					}
+					if (methodWithParams != null) {
 						continue;
 					}
 				}
 
-				bool isValid = true;
-				for (int n = 0; n < args.Length; n++) {
-					if (!CanConvertArg (m, n, args [n], argInfo [n].ParameterType)) {
-						isValid = false;
-						break;
-					}
-				}
-				if (isValid)
+				var kind = MatchArgs (args, argInfo);
+				if (kind == MatchKind.Exact)
 					return m;
+
+				if (kind == MatchKind.CanConvert)
+					validMatch = m;
+				else if (kind == MatchKind.Params)
+					methodWithParams = m;
 			}
-			return methodWithParams;
+
+			return validMatch ?? methodWithParams;
 		}
 
-		bool IsParamsArg (ParameterInfo pi)
+		enum MatchKind
+		{
+			None,
+			Params,
+			CanConvert,
+			Exact,
+		}
+
+		static MatchKind MatchArgs (object[] args, ParameterInfo[] parameters)
+		{
+			var kind = MatchKind.Exact;
+
+			for (int n = 0; n < parameters.Length; n++) {
+				var parameterType = parameters [n].ParameterType;
+
+				// Exclude methods which take a complex object as argument
+				if (Type.GetTypeCode (parameterType) == TypeCode.Object && parameterType != typeof (object)) {
+					return MatchKind.None;
+				}
+
+				if (n == parameters.Length - 1 && IsParamsArg (parameters [n])) {
+					if (parameters.Length - 1 == args.Length || (parameters.Length <= args.Length && CanConvertArg(args[n], parameterType)))
+						return MatchKind.Params;
+					return MatchKind.None;
+				}
+
+				var arg = args [n];
+				if (parameterType.IsInstanceOfType (arg)) {
+					continue;
+				}
+
+				kind = MatchKind.CanConvert;
+				if (!CanConvertArg (args, parameterType)) {
+					return MatchKind.None;
+				}
+			}
+
+			return kind;
+		}
+
+		static bool IsParamsArg (ParameterInfo pi)
 		{
 			return pi.ParameterType.IsArray && pi.IsDefined (typeof (ParamArrayAttribute));
 		}
 
-		bool CanConvertArg (MethodBase method, int argNum, object value, Type parameterType)
+		static bool CanConvertArg (object value, Type parameterType)
 		{
 			var sval = value as string;
 			if (sval == "null" || value == null)
-				return !parameterType.IsValueType || typeof(Nullable).IsInstanceOfType (parameterType);
+				return !parameterType.IsValueType || Nullable.GetUnderlyingType (parameterType) != null;
 
 			if (sval != null && parameterType == typeof (char []))
 				return true;
 
-			if (parameterType == typeof (char) && sval != null && sval.Length != 1)
+			if (sval != null && sval.Length != 1 && parameterType == typeof (char)) {
 				return false;
+			}
 
 			return true;
 		}
@@ -907,15 +952,15 @@ namespace MonoDevelop.Projects.MSBuild
 		{
 			if (typeName == "MSBuild")
 				return typeof (Microsoft.Build.Evaluation.IntrinsicFunctions);
-			else {
-				var t = supportedTypeMembers.FirstOrDefault (st => st.Item1.FullName == typeName);
-				if (t == null)
-					return null;
-				return t.Item1;
+
+			foreach (var kvp in supportedTypeMembers) {
+				if (kvp.Key.FullName == typeName)
+					return kvp.Key;
 			}
+			return null;
 		}
 
-		MemberInfo[] ResolveMember (Type type, string memberName, bool isStatic)
+		MemberInfo[] ResolveMember (Type type, string memberName, bool isStatic, MemberTypes memberTypes)
 		{
 			if (type == typeof (string) && memberName == "new")
 				memberName = "Copy";
@@ -923,52 +968,68 @@ namespace MonoDevelop.Projects.MSBuild
 				type = typeof (Array);
 			var flags = isStatic ? BindingFlags.Static : BindingFlags.Instance;
 			if (type != typeof (Microsoft.Build.Evaluation.IntrinsicFunctions)) {
-				var t = supportedTypeMembers.FirstOrDefault (st => st.Item1 == type);
-				if (t == null)
+				if (!supportedTypeMembers.TryGetValue (type, out var list))
 					return null;
-				if (t.Item2 != null && !t.Item2.Contains (memberName))
+
+				if (list != null && !list.Contains (memberName))
 					return null;
 			} else
 				flags |= BindingFlags.NonPublic;
-			
-			return type.GetMember (memberName, flags | BindingFlags.Public | BindingFlags.IgnoreCase);
+
+			return type.GetMember (memberName, memberTypes, flags | BindingFlags.Public | BindingFlags.IgnoreCase);
 		}
 
-		static Tuple<Type, string []> [] supportedTypeMembers = {
-			Tuple.Create (typeof(System.Array), (string[]) null),
-			Tuple.Create (typeof(System.Byte), (string[]) null),
-			Tuple.Create (typeof(System.Char), (string[]) null),
-			Tuple.Create (typeof(System.Convert), (string[]) null),
-			Tuple.Create (typeof(System.DateTime), (string[]) null),
-			Tuple.Create (typeof(System.Decimal), (string[]) null),
-			Tuple.Create (typeof(System.Double), (string[]) null),
-			Tuple.Create (typeof(System.Enum), (string[]) null),
-			Tuple.Create (typeof(System.Guid), (string[]) null),
-			Tuple.Create (typeof(System.Int16), (string[]) null),
-			Tuple.Create (typeof(System.Int32), (string[]) null),
-			Tuple.Create (typeof(System.Int64), (string[]) null),
-			Tuple.Create (typeof(System.IO.Path), (string[]) null),
-			Tuple.Create (typeof(System.Math), (string[]) null),
-			Tuple.Create (typeof(System.UInt16), (string[]) null),
-			Tuple.Create (typeof(System.UInt32), (string[]) null),
-			Tuple.Create (typeof(System.UInt64), (string[]) null),
-			Tuple.Create (typeof(System.SByte), (string[]) null),
-			Tuple.Create (typeof(System.Single), (string[]) null),
-			Tuple.Create (typeof(System.String), (string[]) null),
-			Tuple.Create (typeof(System.StringComparer), (string[]) null),
-			Tuple.Create (typeof(System.TimeSpan), (string[]) null),
-			Tuple.Create (typeof(System.Text.RegularExpressions.Regex), (string[]) null),
-			Tuple.Create (typeof(Microsoft.Build.Utilities.ToolLocationHelper), (string[]) null),
-			Tuple.Create (typeof(System.Globalization.CultureInfo), (string[]) null),
-			Tuple.Create (typeof(System.Environment), new string [] {
-				"CommandLine", "ExpandEnvironmentVariables", "GetEnvironmentVariable", "GetEnvironmentVariables", "GetFolderPath", "GetLogicalDrives"
-			}),
-			Tuple.Create (typeof(System.IO.Directory), new string [] {
-				"GetDirectories", "GetFiles", "GetLastAccessTime", "GetLastWriteTime", "GetParent"
-			}),
-			Tuple.Create (typeof(System.IO.File), new string [] {
-				"Exists", "GetCreationTime", "GetAttributes", "GetLastAccessTime", "GetLastWriteTime", "ReadAllText"
-			}),
+		sealed class TypeEqualityComparer : IEqualityComparer<Type>
+		{
+			public bool Equals (Type x, Type y) => x == y;
+
+			public int GetHashCode (Type obj) => obj?.GetHashCode () ?? 0;
+		}
+
+		static readonly Dictionary<Type, string []> supportedTypeMembers = new Dictionary<Type, string []> (new TypeEqualityComparer()) {
+			{ typeof(System.Array), null },
+			{ typeof(System.Byte), null },
+			{ typeof(System.Char), null },
+			{ typeof(System.Convert), null },
+			{ typeof(System.DateTime), null },
+			{ typeof(System.Decimal), null },
+			{ typeof(System.Double), null },
+			{ typeof(System.Enum), null },
+			{ typeof(System.Guid), null },
+			{ typeof(System.Int16), null },
+			{ typeof(System.Int32), null },
+			{ typeof(System.Int64), null },
+			{ typeof(System.IO.Path), null },
+			{ typeof(System.Math), null },
+			{ typeof(System.UInt16), null },
+			{ typeof(System.UInt32), null },
+			{ typeof(System.UInt64), null },
+			{ typeof(System.SByte), null },
+			{ typeof(System.Single), null },
+			{ typeof(System.String), null },
+			{ typeof(System.StringComparer), null },
+			{ typeof(System.TimeSpan), null },
+			{ typeof(System.Text.RegularExpressions.Regex), null },
+			{ typeof(Microsoft.Build.Utilities.ToolLocationHelper), null },
+			{ typeof(System.Globalization.CultureInfo), null },
+			{
+				typeof (System.Environment),
+				new string [] {
+					"CommandLine", "ExpandEnvironmentVariables", "GetEnvironmentVariable", "GetEnvironmentVariables", "GetFolderPath", "GetLogicalDrives"
+				}
+			},
+			{
+				typeof (System.IO.Directory),
+				new string [] {
+					"GetDirectories", "GetFiles", "GetLastAccessTime", "GetLastWriteTime", "GetParent"
+				}
+			},
+			{
+				typeof (System.IO.File),
+				new string [] {
+					"Exists", "GetCreationTime", "GetAttributes", "GetLastAccessTime", "GetLastWriteTime", "ReadAllText"
+				}
+			},
 		};
 
 		int FindNextTag (string str, int i)
